@@ -98,7 +98,7 @@ class Dumper
 	private static function objectToLine($object)
 	{
 		$line = get_class($object);
-		if ($object instanceof \DateTime || $object instanceof \DateTimeInterface) {
+		if ($object instanceof \DateTimeInterface) {
 			$line .= '(' . $object->format('Y-m-d H:i:s O') . ')';
 		}
 
