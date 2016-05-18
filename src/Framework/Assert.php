@@ -417,7 +417,11 @@ class Assert
 		if (!is_string($pattern)) {
 			throw new \Exception('Pattern must be a string.');
 
-		} elseif (!is_scalar($actual) || !self::isMatching($pattern, $actual)) {
+		} elseif (!is_scalar($actual)) {
+			self::fail(self::describe('%1 should match %2', $description), $actual, rtrim($pattern));
+
+		} elseif (!self::isMatching($pattern, $actual)) {
+			$pattern = self::expandMatchingPatterns($pattern, $actual);
 			self::fail(self::describe('%1 should match %2', $description), $actual, rtrim($pattern));
 		}
 	}
@@ -434,7 +438,11 @@ class Assert
 		if ($pattern === FALSE) {
 			throw new \Exception("Unable to read file '$file'.");
 
-		} elseif (!is_scalar($actual) || !self::isMatching($pattern, $actual)) {
+		} elseif (!is_scalar($actual)) {
+			self::fail(self::describe('%1 should match %2', $description), $actual, rtrim($pattern));
+
+		} elseif (!self::isMatching($pattern, $actual)) {
+			$pattern = self::expandMatchingPatterns($pattern, $actual);
 			self::fail(self::describe('%1 should match %2', $description), $actual, rtrim($pattern));
 		}
 	}
@@ -475,7 +483,7 @@ class Assert
 	 * @return bool
 	 * @internal
 	 */
-	public static function isMatching($pattern, $actual)
+	public static function isMatching($pattern, $actual, $strict = FALSE)
 	{
 		if (!is_string($pattern) && !is_scalar($actual)) {
 			throw new \Exception('Value and pattern must be strings.');
@@ -485,6 +493,7 @@ class Assert
 
 		if (!preg_match('/^([~#]).+(\1)[imsxUu]*\z/s', $pattern)) {
 			$utf8 = preg_match('#\x80-\x{10FFFF}]#u', $pattern) ? 'u' : '';
+			$suffix = ($strict ? '\z#sU' : '\s*$#sU') . $utf8;
 			$patterns = static::$patterns + [
 				'[.\\\\+*?[^$(){|\x00\#]' => '\$0', // preg quoting
 				'[\t ]*\r?\n' => "[\\t ]*\n", // right trim
@@ -496,7 +505,7 @@ class Assert
 						return $s;
 					}
 				}
-			}, rtrim($pattern)) . '\s*$#sU' . $utf8;
+			}, rtrim($pattern)) . $suffix;
 			$actual = str_replace("\r\n", "\n", $actual);
 		}
 
@@ -506,6 +515,57 @@ class Assert
 			throw new \Exception('Error while executing regular expression. (PREG Error Code ' . preg_last_error() . ')');
 		}
 		return (bool) $res;
+	}
+
+
+	/**
+	 * @return array
+	 * @internal
+	 */
+	public static function expandMatchingPatterns($pattern, $actual)
+	{
+		$parts = preg_split('#(%)#', $pattern, -1, PREG_SPLIT_DELIM_CAPTURE);
+		for ($i = count($parts); $i >= 0; $i--) {
+			$patternX = implode('', array_slice($parts, 0, $i));
+			$patternY = "$patternX%A?%";
+			if (self::isMatching($patternY, $actual)) {
+				$patternZ = implode('', array_slice($parts, $i));
+				break;
+			}
+		}
+
+		foreach (['%A%', '%A?%'] as $evilPattern) {
+			if (substr($patternX, -strlen($evilPattern)) === $evilPattern) {
+				$patternX = substr($patternX, 0, -strlen($evilPattern));
+				$patternY = "$patternX%A?%";
+				$patternZ = $evilPattern . $patternZ;
+				break;
+			}
+		}
+
+		$low = 0;
+		$high = strlen($actual);
+		while ($low <= $high) {
+			$mid = ($low + $high) >> 1;
+			if (self::isMatching($patternY, substr($actual, 0, $mid))) {
+				$high = $mid - 1;
+			} else {
+				$low = $mid + 1;
+			}
+		}
+
+		$low = $high + 2;
+		$high = strlen($actual);
+		while ($low <= $high) {
+			$mid = ($low + $high) >> 1;
+			if (!self::isMatching($patternX, substr($actual, 0, $mid), TRUE)) {
+				$high = $mid - 1;
+			} else {
+				$low = $mid + 1;
+			}
+		}
+
+		return substr($actual, 0, $high) . $patternZ;
 	}
 
 
