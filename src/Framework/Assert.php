@@ -491,30 +491,39 @@ class Assert
 
 		$old = ini_set('pcre.backtrack_limit', '10000000');
 
-		if (!preg_match('/^([~#]).+(\1)[imsxUu]*\z/s', $pattern)) {
-			$utf8 = preg_match('#\x80-\x{10FFFF}]#u', $pattern) ? 'u' : '';
-			$suffix = ($strict ? '\z#sU' : '\s*$#sU') . $utf8;
-			$patterns = static::$patterns + [
-				'[.\\\\+*?[^$(){|\x00\#]' => '\$0', // preg quoting
-				'[\t ]*\r?\n' => "[\\t ]*\n", // right trim
-			];
-			$pattern = '#^' . preg_replace_callback('#' . implode('|', array_keys($patterns)) . '#U' . $utf8, function ($m) use ($patterns) {
-				foreach ($patterns as $re => $replacement) {
-					$s = preg_replace("#^$re\\z#", str_replace('\\', '\\\\', $replacement), $m[0], 1, $count);
-					if ($count) {
-						return $s;
+		static $compiled = [];
+		if (!isset($compiled[$pattern][$strict])) {
+			if (preg_match('/^([~#]).+(\1)[imsxUu]*\z/s', $pattern)) {
+				$compiled[$pattern][$strict] = $pattern;
+
+			} else {
+				$utf8 = preg_match('#\x80-\x{10FFFF}]#u', $pattern) ? 'u' : '';
+				$suffix = ($strict ? '\z}sU' : '\s*$}sU') . $utf8;
+				$patterns = static::$patterns + [
+					'[.\\\\+*?[^$(){}|\x00\#]' => '\$0', // preg quoting
+					'[\t ]*\r?\n' => "[\\t ]*\n", // right trim
+				];
+				$compiled[$pattern][$strict] = '{^' . preg_replace_callback('#' . implode('|', array_keys($patterns)) . '#U' . $utf8, function ($m) use ($patterns) {
+					foreach ($patterns as $re => $replacement) {
+						$s = preg_replace("#^$re\\z#", str_replace('\\', '\\\\', $replacement), $m[0], 1, $count);
+						if ($count) {
+							return $s;
+						}
 					}
-				}
-			}, rtrim($pattern)) . $suffix;
+				}, rtrim($pattern)) . $suffix;
+			}
+		}
+
+		if ($compiled[$pattern][$strict][0] === '{') {
 			$actual = str_replace("\r\n", "\n", $actual);
 		}
 
-		$res = preg_match($pattern, $actual);
+		$result = preg_match($compiled[$pattern][$strict], $actual);
 		ini_set('pcre.backtrack_limit', $old);
-		if ($res === FALSE || preg_last_error()) {
+		if ($result === FALSE || preg_last_error()) {
 			throw new \Exception('Error while executing regular expression. (PREG Error Code ' . preg_last_error() . ')');
 		}
-		return (bool) $res;
+		return (bool) $result;
 	}
 
 
@@ -524,24 +533,29 @@ class Assert
 	 */
 	public static function expandMatchingPatterns($pattern, $actual)
 	{
-		$parts = preg_split('#(%)#', $pattern, -1, PREG_SPLIT_DELIM_CAPTURE);
-		for ($i = count($parts); $i >= 0; $i--) {
-			$patternX = implode('', array_slice($parts, 0, $i));
-			$patternY = "$patternX%A?%";
-			if (self::isMatching($patternY, $actual)) {
-				$patternZ = implode('', array_slice($parts, $i));
-				break;
+		$foo = str_replace('(', '(?:', implode('|', array_keys(self::$patterns))); // EVIL
+		$parts = preg_split('#(' . $foo . ')#', $pattern, -1, PREG_SPLIT_DELIM_CAPTURE);
+
+		$low = 0;
+		$high = count($parts);
+		while ($low <= $high) {
+			$mid = ($low + $high) >> 1;
+			$part = $mid ? $parts[$mid - 1] : '';
+			$patternY = implode('', array_slice($parts, 0, $mid));
+			if (!self::isMatching($patternY . '%A?%', $actual)) {
+				$high = $mid - 1;
+			} else {
+				$low = $mid + 1;
 			}
 		}
 
-		foreach (['%A%', '%A?%'] as $evilPattern) {
-			if (substr($patternX, -strlen($evilPattern)) === $evilPattern) {
-				$patternX = substr($patternX, 0, -strlen($evilPattern));
-				$patternY = "$patternX%A?%";
-				$patternZ = $evilPattern . $patternZ;
-				break;
-			}
+		if ($high > 0 && ($parts[$high - 1] === '%A%' || $parts[$high - 1] === '%A?%')) {
+			$high--;
 		}
+
+		$patternX = implode('', array_slice($parts, 0, $high));
+		$patternY = "$patternX%A?%";
+		$patternZ = implode('', array_slice($parts, $high));
 
 		$low = 0;
 		$high = strlen($actual);
